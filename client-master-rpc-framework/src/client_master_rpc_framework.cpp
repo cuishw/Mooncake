@@ -8,6 +8,23 @@
 
 namespace mooncake::client_master_rpc {
 
+tl::expected<void, ErrorCode> MasterMemoryRegistry::RegisterClientMemory(
+    const ClientMemoryRegistration& registration) {
+    if (registration.size == 0) {
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    registered_memory_[registration.host_id] = registration;
+    return {};
+}
+
+std::unordered_map<UUID, ClientMemoryRegistration, boost::hash<UUID>>
+MasterMemoryRegistry::Snapshot() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return registered_memory_;
+}
+
 void RegisterRpcService(coro_rpc::coro_rpc_server& server,
                         WrappedMasterService& wrapped_master_service) {
     server.register_handler<&WrappedMasterService::ServiceReady>(
@@ -33,6 +50,8 @@ void RegisterRpcService(coro_rpc::coro_rpc_server& server,
     server.register_handler<&WrappedMasterService::UnmountSegment>(
         &wrapped_master_service);
     server.register_handler<&WrappedMasterService::Ping>(
+        &wrapped_master_service);
+    server.register_handler<&WrappedMasterService::RegisterClientMemory>(
         &wrapped_master_service);
 }
 
@@ -66,6 +85,26 @@ ErrorCode MasterClientBase::Connect(const std::string& master_addr) {
 
     auto result =
         invoke_rpc<&WrappedMasterService::ServiceReady, std::string>();
+    if (!result.has_value()) {
+        return result.error();
+    }
+    return ErrorCode::OK;
+}
+
+ErrorCode MasterClientBase::InitializeAndRegisterMemory(
+    const std::string& master_addr,
+    const ClientMemoryRegistration& registration) {
+    auto connect_result = Connect(master_addr);
+    if (connect_result != ErrorCode::OK) {
+        return connect_result;
+    }
+    return RegisterReservedMemory(registration);
+}
+
+ErrorCode MasterClientBase::RegisterReservedMemory(
+    const ClientMemoryRegistration& registration) {
+    auto result = invoke_rpc<&WrappedMasterService::RegisterClientMemory, void>(
+        registration);
     if (!result.has_value()) {
         return result.error();
     }

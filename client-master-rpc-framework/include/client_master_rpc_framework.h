@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
@@ -30,6 +31,29 @@
 namespace mooncake::client_master_rpc {
 
 static const std::string kDefaultMasterAddress = "localhost:50051";
+
+struct ClientMemoryRegistration {
+    UUID host_id;
+    uint64_t base_addr;
+    uint64_t size;
+};
+YLT_REFL(ClientMemoryRegistration, host_id, base_addr, size);
+
+class MasterMemoryRegistry {
+   public:
+    tl::expected<void, ErrorCode> RegisterClientMemory(
+        const ClientMemoryRegistration& registration);
+
+    std::unordered_map<UUID, ClientMemoryRegistration, boost::hash<UUID>>
+    Snapshot() const;
+
+   private:
+    // TODO: Replace this registry with the master's global allocator so object
+    // placement can carve ranges from registered client memory.
+    mutable std::mutex mutex_;
+    std::unordered_map<UUID, ClientMemoryRegistration, boost::hash<UUID>>
+        registered_memory_;
+};
 
 namespace detail {
 
@@ -82,6 +106,8 @@ class WrappedMasterService {
     tl::expected<void, ErrorCode> UnmountSegment(const UUID& segment_id,
                                                  const UUID& client_id);
     tl::expected<PingResponse, ErrorCode> Ping(const UUID& client_id);
+    tl::expected<void, ErrorCode> RegisterClientMemory(
+        const ClientMemoryRegistration& registration);
 };
 
 void RegisterRpcService(coro_rpc::coro_rpc_server& server,
@@ -108,6 +134,7 @@ MOONCAKE_RPC_NAME(Remove);
 MOONCAKE_RPC_NAME(MountSegment);
 MOONCAKE_RPC_NAME(UnmountSegment);
 MOONCAKE_RPC_NAME(Ping);
+MOONCAKE_RPC_NAME(RegisterClientMemory);
 
 #undef MOONCAKE_RPC_NAME
 
@@ -121,6 +148,11 @@ class MasterClientBase {
 
     [[nodiscard]] ErrorCode Connect(
         const std::string& master_addr = kDefaultMasterAddress);
+    [[nodiscard]] ErrorCode InitializeAndRegisterMemory(
+        const std::string& master_addr,
+        const ClientMemoryRegistration& registration);
+    [[nodiscard]] ErrorCode RegisterReservedMemory(
+        const ClientMemoryRegistration& registration);
 
    protected:
     template <auto ServiceMethod, typename ReturnType, typename... Args>
